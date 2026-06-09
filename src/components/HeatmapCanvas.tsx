@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useMap } from 'react-leaflet'
 import { useStore } from '@/store'
-import { drawHeatmap, drawDetectorMarkers, drawLeakSource } from '@/utils/heatmap'
+import { drawHeatmap, drawDetectorMarkers, drawLeakSource, cullDetectorsToViewport, findClickedDetector } from '@/utils/heatmap'
 
 export default function HeatmapCanvas() {
   const map = useMap()
@@ -23,6 +23,16 @@ export default function HeatmapCanvas() {
     canvas.width = width
     canvas.height = height
 
+    const bounds = map.getBounds()
+    const mapBounds = {
+      north: bounds.getNorth(),
+      south: bounds.getSouth(),
+      east: bounds.getEast(),
+      west: bounds.getWest(),
+    }
+
+    const visibleDetectors = cullDetectorsToViewport(detectors, mapBounds)
+
     const latLngToPixel = (lat: number, lng: number) => {
       const point = map.latLngToContainerPoint([lat, lng])
       return { x: point.x, y: point.y }
@@ -35,9 +45,11 @@ export default function HeatmapCanvas() {
       return Math.abs(p2.x - p1.x)
     }
 
+    const zoom = map.getZoom()
+
     ctx.clearRect(0, 0, width, height)
-    drawHeatmap(ctx, detectors, { width, height }, latLngToPixel)
-    drawDetectorMarkers(ctx, detectors, latLngToPixel)
+    drawHeatmap(ctx, visibleDetectors, { width, height }, latLngToPixel)
+    drawDetectorMarkers(ctx, visibleDetectors, latLngToPixel, zoom)
     if (leakSource) {
       drawLeakSource(ctx, leakSource.source_position, latLngToPixel, metersToPixels)
     }
@@ -45,9 +57,9 @@ export default function HeatmapCanvas() {
 
   useEffect(() => {
     redraw()
-    map.on('move zoom', redraw)
+    map.on('moveend zoomend', redraw)
     return () => {
-      map.off('move zoom', redraw)
+      map.off('moveend zoomend', redraw)
     }
   }, [map, redraw])
 
@@ -58,15 +70,25 @@ export default function HeatmapCanvas() {
       const rect = canvas.getBoundingClientRect()
       const x = e.clientX - rect.left
       const y = e.clientY - rect.top
+      const zoom = map.getZoom()
 
-      for (const d of detectors) {
-        const point = map.latLngToContainerPoint([d.latitude, d.longitude])
-        const dx = point.x - x
-        const dy = point.y - y
-        if (dx * dx + dy * dy <= 100) {
-          setSelectedDetector(d)
-          return
-        }
+      const bounds = map.getBounds()
+      const mapBounds = {
+        north: bounds.getNorth(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        west: bounds.getWest(),
+      }
+      const visibleDetectors = cullDetectorsToViewport(detectors, mapBounds)
+
+      const latLngToPixel = (lat: number, lng: number) => {
+        const point = map.latLngToContainerPoint([lat, lng])
+        return { x: point.x, y: point.y }
+      }
+
+      const clicked = findClickedDetector(visibleDetectors, latLngToPixel, x, y, zoom)
+      if (clicked) {
+        setSelectedDetector(clicked)
       }
     },
     [map, detectors, setSelectedDetector],

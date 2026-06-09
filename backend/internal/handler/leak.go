@@ -43,11 +43,11 @@ func (h *LeakHandler) LocateLeak(c *gin.Context) {
 
 	switch method {
 	case "bayesian":
-		b := leak.NewBayesian(req.DetectorReadings, req.WindSpeed, req.WindDirection)
+		b := leak.NewBayesian(req.DetectorReadings, req.WindSpeed, req.WindDirection, req.WindTimestamp)
 		result = b.Run()
 		method = "bayesian"
 	default:
-		p := leak.NewPSO(req.DetectorReadings, req.WindSpeed, req.WindDirection)
+		p := leak.NewPSO(req.DetectorReadings, req.WindSpeed, req.WindDirection, req.WindTimestamp)
 		result = p.Run()
 		method = "pso"
 	}

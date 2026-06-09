@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useStore } from '@/store'
 import { api } from '@/utils/api'
-import type { ControlResult, LeakSourceResult } from '@/types'
+import type { LeakSourceResult } from '@/types'
 import { Shield, Wind, Bell, Crosshair, CheckCircle, XCircle, Loader2 } from 'lucide-react'
 
 export default function ControlPage() {
@@ -24,17 +24,16 @@ export default function ControlPage() {
   }, [])
 
   const handleValveToggle = useCallback(
-    async (partitionId: string, valveId: string, currentState: string) => {
+    async (partitionId: string, _valveId: string, currentState: string) => {
       const key = `valve-${partitionId}`
-      const action = currentState === 'open' ? 'closed' : 'open'
+      const action = currentState === 'open' ? 'close' : 'open'
       try {
-        const result: ControlResult = await api.controlValve({
-          device_id: valveId,
-          action: action as 'open' | 'closed',
+        const result = await api.controlValve({
+          partition_id: partitionId,
+          action: action as 'open' | 'close',
         })
-        if (result.success) {
-          updatePartitionState(partitionId, 'valve_state', result.new_state)
-          setFeedbackFor(key, true, '操作成功')
+        if (result.status === 'sent') {
+          setFeedbackFor(key, true, `指令已发送(等待确认)`)
         } else {
           setFeedbackFor(key, false, '操作失败')
         }
@@ -46,17 +45,16 @@ export default function ControlPage() {
   )
 
   const handleFanToggle = useCallback(
-    async (partitionId: string, fanId: string, currentState: string) => {
+    async (partitionId: string, _fanId: string, currentState: string) => {
       const key = `fan-${partitionId}`
       const action = currentState === 'running' ? 'stop' : 'start'
       try {
-        const result: ControlResult = await api.controlFan({
-          device_id: fanId,
+        const result = await api.controlFan({
+          partition_id: partitionId,
           action: action as 'start' | 'stop',
         })
-        if (result.success) {
-          updatePartitionState(partitionId, 'fan_state', result.new_state)
-          setFeedbackFor(key, true, '操作成功')
+        if (result.status === 'sent') {
+          setFeedbackFor(key, true, `指令已发送(等待确认)`)
         } else {
           setFeedbackFor(key, false, '操作失败')
         }
@@ -71,15 +69,11 @@ export default function ControlPage() {
     async (partitionId: string) => {
       const key = `notify-${partitionId}`
       try {
-        const result: ControlResult = await api.sendNotification({
+        await api.sendNotification({
           partition_id: partitionId,
           message: '紧急疏散通知：检测到燃气泄漏，请立即撤离！',
         })
-        if (result.success) {
-          setFeedbackFor(key, true, '通知已发送')
-        } else {
-          setFeedbackFor(key, false, '发送失败')
-        }
+        setFeedbackFor(key, true, '通知已发送')
       } catch {
         setFeedbackFor(key, false, '请求错误')
       }

@@ -3,28 +3,96 @@ package repository
 import (
 	"context"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
+	"github.com/influxdata/influxdb-client-go/v2/api/write"
 )
 
 type InfluxRepo struct {
 	client   influxdb2.Client
 	org      string
 	bucket   string
-	writeAPI api.WriteAPIBlocking
+	writeAPI api.WriteAPI
 	queryAPI api.QueryAPI
+
+	mu      sync.Mutex
+	pending []*write.Point
+	bufSize int
+	flushMs time.Duration
+	quit    chan struct{}
 }
 
 func NewInfluxRepo(client influxdb2.Client, org, bucket string) *InfluxRepo {
-	return &InfluxRepo{
+	writeAPI := client.WriteAPI(org, bucket)
+
+	r := &InfluxRepo{
 		client:   client,
 		org:      org,
 		bucket:   bucket,
-		writeAPI: client.WriteAPIBlocking(org, bucket),
+		writeAPI: writeAPI,
 		queryAPI: client.QueryAPI(org),
+		pending:  make([]*write.Point, 0, 512),
+		bufSize:  500,
+		flushMs:  500 * time.Millisecond,
+		quit:     make(chan struct{}),
 	}
+
+	go r.errorLogger()
+	go r.flushLoop()
+
+	return r
+}
+
+func (r *InfluxRepo) errorLogger() {
+	for err := range r.writeAPI.Errors() {
+		log.Printf("InfluxDB batch write error: %v", err)
+	}
+}
+
+func (r *InfluxRepo) flushLoop() {
+	ticker := time.NewTicker(r.flushMs)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			r.flush()
+		case <-r.quit:
+			r.flush()
+			return
+		}
+	}
+}
+
+func (r *InfluxRepo) flush() {
+	r.mu.Lock()
+	batch := r.pending
+	r.pending = make([]*write.Point, 0, 512)
+	r.mu.Unlock()
+
+	if len(batch) == 0 {
+		return
+	}
+	r.writeAPI.WritePoint(batch...)
+}
+
+func (r *InfluxRepo) enqueue(p *write.Point) {
+	r.mu.Lock()
+	r.pending = append(r.pending, p)
+	shouldFlush := len(r.pending) >= r.bufSize
+	r.mu.Unlock()
+
+	if shouldFlush {
+		r.flush()
+	}
+}
+
+func (r *InfluxRepo) Close() {
+	close(r.quit)
+	r.writeAPI.Flush()
 }
 
 func (r *InfluxRepo) WriteDetectorData(ctx context.Context, detectorID string, concentration float64, timestamp time.Time) error {
@@ -32,7 +100,8 @@ func (r *InfluxRepo) WriteDetectorData(ctx context.Context, detectorID string, c
 		AddTag("detector_id", detectorID).
 		AddField("concentration", concentration).
 		SetTime(timestamp)
-	return r.writeAPI.WritePoint(ctx, p)
+	r.enqueue(p)
+	return nil
 }
 
 func (r *InfluxRepo) QueryDetectorHistory(ctx context.Context, detectorID string, start time.Duration, interval string) ([]map[string]interface{}, error) {
@@ -104,7 +173,8 @@ func (r *InfluxRepo) WriteSensorData(ctx context.Context, sensorID string, senso
 		AddTag("sensor_type", sensorType).
 		AddField("value", value).
 		SetTime(timestamp)
-	return r.writeAPI.WritePoint(ctx, p)
+	r.enqueue(p)
+	return nil
 }
 
 func (r *InfluxRepo) WriteWindData(ctx context.Context, speed float64, direction float64, timestamp time.Time) error {
@@ -112,5 +182,6 @@ func (r *InfluxRepo) WriteWindData(ctx context.Context, speed float64, direction
 		AddField("speed", speed).
 		AddField("direction", direction).
 		SetTime(timestamp)
-	return r.writeAPI.WritePoint(ctx, p)
+	r.enqueue(p)
+	return nil
 }

@@ -6,6 +6,14 @@ interface HeatmapPoint {
   intensity: number
 }
 
+interface Cluster {
+  x: number
+  y: number
+  count: number
+  maxConcentration: number
+  detectors: DetectorInfo[]
+}
+
 const CONCENTRATION_COLORS: [number, string][] = [
   [0, '#00ff88'],
   [5, '#44ff44'],
@@ -31,6 +39,85 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
     : { r: 0, g: 255, b: 136 }
 }
 
+export function cullDetectorsToViewport(
+  detectors: DetectorInfo[],
+  bounds: { north: number; south: number; east: number; west: number },
+  padding: number = 0.002
+): DetectorInfo[] {
+  return detectors.filter(d =>
+    d.latitude >= bounds.south - padding &&
+    d.latitude <= bounds.north + padding &&
+    d.longitude >= bounds.west - padding &&
+    d.longitude <= bounds.east + padding
+  )
+}
+
+export function clusterDetectors(
+  detectors: DetectorInfo[],
+  latLngToPixel: (lat: number, lng: number) => { x: number; y: number },
+  zoom: number
+): { individuals: DetectorInfo[]; clusters: Cluster[] } {
+  const clusterRadius = getClusterRadius(zoom)
+
+  if (clusterRadius <= 0) {
+    return { individuals: detectors, clusters: [] }
+  }
+
+  const visited = new Set<number>()
+  const clusters: Cluster[] = []
+  const individuals: DetectorInfo[] = []
+
+  for (let i = 0; i < detectors.length; i++) {
+    if (visited.has(i)) continue
+    visited.add(i)
+
+    const d = detectors[i]
+    const pixel = latLngToPixel(d.latitude, d.longitude)
+    const group: DetectorInfo[] = [d]
+
+    for (let j = i + 1; j < detectors.length; j++) {
+      if (visited.has(j)) continue
+      const other = detectors[j]
+      const otherPixel = latLngToPixel(other.latitude, other.longitude)
+      const dx = pixel.x - otherPixel.x
+      const dy = pixel.y - otherPixel.y
+      if (dx * dx + dy * dy < clusterRadius * clusterRadius) {
+        visited.add(j)
+        group.push(other)
+      }
+    }
+
+    if (group.length === 1) {
+      individuals.push(group[0])
+    } else {
+      let sumX = 0, sumY = 0, maxConc = 0
+      for (const det of group) {
+        const p = latLngToPixel(det.latitude, det.longitude)
+        sumX += p.x
+        sumY += p.y
+        if (det.latest_concentration > maxConc) maxConc = det.latest_concentration
+      }
+      clusters.push({
+        x: sumX / group.length,
+        y: sumY / group.length,
+        count: group.length,
+        maxConcentration: maxConc,
+        detectors: group,
+      })
+    }
+  }
+
+  return { individuals, clusters }
+}
+
+function getClusterRadius(zoom: number): number {
+  if (zoom >= 15) return 0
+  if (zoom >= 13) return 10
+  if (zoom >= 11) return 18
+  if (zoom >= 9) return 28
+  return 40
+}
+
 export function drawHeatmap(
   ctx: CanvasRenderingContext2D,
   detectors: DetectorInfo[],
@@ -53,6 +140,11 @@ export function drawHeatmap(
   const radius = 60
 
   for (const point of points) {
+    if (point.x < -radius || point.x > mapBounds.width + radius ||
+        point.y < -radius || point.y > mapBounds.height + radius) {
+      continue
+    }
+
     const gradient = ctx.createRadialGradient(
       point.x, point.y, 0,
       point.x, point.y, radius
@@ -71,10 +163,18 @@ export function drawHeatmap(
 export function drawDetectorMarkers(
   ctx: CanvasRenderingContext2D,
   detectors: DetectorInfo[],
-  latLngToPixel: (lat: number, lng: number) => { x: number; y: number }
+  latLngToPixel: (lat: number, lng: number) => { x: number; y: number },
+  zoom: number
 ) {
-  for (const d of detectors) {
+  const { individuals, clusters } = clusterDetectors(detectors, latLngToPixel, zoom)
+
+  for (const d of individuals) {
     const pixel = latLngToPixel(d.latitude, d.longitude)
+    if (pixel.x < -20 || pixel.x > ctx.canvas.width + 20 ||
+        pixel.y < -20 || pixel.y > ctx.canvas.height + 20) {
+      continue
+    }
+
     const color = getConcentrationColor(d.latest_concentration)
     const rgb = hexToRgb(color)
 
@@ -98,6 +198,31 @@ export function drawDetectorMarkers(
       ctx.lineWidth = 1
       ctx.stroke()
     }
+  }
+
+  for (const cluster of clusters) {
+    if (cluster.x < -20 || cluster.x > ctx.canvas.width + 20 ||
+        cluster.y < -20 || cluster.y > ctx.canvas.height + 20) {
+      continue
+    }
+
+    const color = getConcentrationColor(cluster.maxConcentration)
+    const rgb = hexToRgb(color)
+    const radius = Math.min(6 + Math.sqrt(cluster.count) * 2, 20)
+
+    ctx.beginPath()
+    ctx.arc(cluster.x, cluster.y, radius, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},0.6)`
+    ctx.fill()
+    ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},0.8)`
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+
+    ctx.fillStyle = '#ffffff'
+    ctx.font = '10px Inter, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(cluster.count), cluster.x, cluster.y)
   }
 }
 
@@ -135,6 +260,38 @@ export function drawLeakSource(
   ctx.strokeStyle = '#ffffff'
   ctx.lineWidth = 1.5
   ctx.stroke()
+}
+
+export function findClickedDetector(
+  detectors: DetectorInfo[],
+  latLngToPixel: (lat: number, lng: number) => { x: number; y: number },
+  clickX: number,
+  clickY: number,
+  zoom: number
+): DetectorInfo | null {
+  const { individuals, clusters } = clusterDetectors(detectors, latLngToPixel, zoom)
+
+  for (const d of individuals) {
+    const point = latLngToPixel(d.latitude, d.longitude)
+    const dx = point.x - clickX
+    const dy = point.y - clickY
+    if (dx * dx + dy * dy <= 100) {
+      return d
+    }
+  }
+
+  for (const cluster of clusters) {
+    const dx = cluster.x - clickX
+    const dy = cluster.y - clickY
+    const radius = Math.min(6 + Math.sqrt(cluster.count) * 2, 20)
+    if (dx * dx + dy * dy <= radius * radius) {
+      return cluster.detectors.reduce((prev, curr) =>
+        prev.latest_concentration > curr.latest_concentration ? prev : curr
+      )
+    }
+  }
+
+  return null
 }
 
 export { getConcentrationColor, hexToRgb }

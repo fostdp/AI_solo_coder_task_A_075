@@ -109,6 +109,7 @@ type LocateRequest struct {
 	DetectorReadings []DetectorReading `json:"detector_readings"`
 	WindSpeed        float64           `json:"wind_speed"`
 	WindDirection    float64           `json:"wind_direction"`
+	WindTimestamp    time.Time         `json:"wind_timestamp"`
 	Method           string            `json:"method"`
 }
 

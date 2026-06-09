@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -19,10 +20,48 @@ type ControlHandler struct {
 }
 
 func NewControlHandler(pgRepo *repository.PostgresRepo, mqttClient *mqtt.Client, hub *ws.Hub) *ControlHandler {
-	return &ControlHandler{
+	h := &ControlHandler{
 		pgRepo:     pgRepo,
 		mqttClient: mqttClient,
 		hub:        hub,
+	}
+	go h.consumeMQTTResults()
+	return h
+}
+
+func (h *ControlHandler) consumeMQTTResults() {
+	for result := range h.mqttClient.Results() {
+		log.Printf("[Control] MQTT command result: id=%s device=%s/%s status=%s retries=%d",
+			result.CommandID, result.DeviceType, result.PartitionID, result.Status, result.Retries)
+
+		h.hub.Broadcast(model.WSMessage{
+			Type: "control_update",
+			Payload: map[string]interface{}{
+				"command_id":   result.CommandID,
+				"partition_id": result.PartitionID,
+				"device_type":  result.DeviceType,
+				"action":       result.Action,
+				"status":       string(result.Status),
+				"retries":      result.Retries,
+				"timestamp":    result.Timestamp,
+			},
+		})
+
+		if result.Status == mqtt.CommandAcked {
+			if result.DeviceType == "valve" {
+				status := "open"
+				if result.Action == "close" {
+					status = "closed"
+				}
+				h.pgRepo.UpdatePartitionValve(result.PartitionID, status)
+			} else if result.DeviceType == "fan" {
+				status := "stopped"
+				if result.Action == "start" {
+					status = "running"
+				}
+				h.pgRepo.UpdatePartitionFan(result.PartitionID, status)
+			}
+		}
 	}
 }
 
@@ -53,13 +92,8 @@ func (h *ControlHandler) ControlValve(c *gin.Context) {
 		return
 	}
 
-	h.mqttClient.PublishValveControl(req.PartitionID, req.Action)
+	cmdID := h.mqttClient.PublishValveControl(req.PartitionID, req.Action)
 
-	status := "open"
-	if req.Action == "close" {
-		status = "closed"
-	}
-	h.pgRepo.UpdatePartitionValve(req.PartitionID, status)
 	h.pgRepo.CreateControlLog(model.ControlLog{
 		TargetType: "valve",
 		TargetID:   req.PartitionID,
@@ -71,13 +105,18 @@ func (h *ControlHandler) ControlValve(c *gin.Context) {
 	h.hub.Broadcast(model.WSMessage{
 		Type: "control",
 		Payload: map[string]interface{}{
-			"type":   "valve",
-			"id":     req.PartitionID,
-			"action": req.Action,
+			"type":       "valve",
+			"id":         req.PartitionID,
+			"action":     req.Action,
+			"command_id": cmdID,
+			"status":     "pending",
 		},
 	})
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "sent",
+		"command_id": cmdID,
+	})
 }
 
 func (h *ControlHandler) ControlFan(c *gin.Context) {
@@ -92,13 +131,8 @@ func (h *ControlHandler) ControlFan(c *gin.Context) {
 		return
 	}
 
-	h.mqttClient.PublishFanControl(req.PartitionID, req.Action)
+	cmdID := h.mqttClient.PublishFanControl(req.PartitionID, req.Action)
 
-	status := "stopped"
-	if req.Action == "start" {
-		status = "running"
-	}
-	h.pgRepo.UpdatePartitionFan(req.PartitionID, status)
 	h.pgRepo.CreateControlLog(model.ControlLog{
 		TargetType: "fan",
 		TargetID:   req.PartitionID,
@@ -110,13 +144,18 @@ func (h *ControlHandler) ControlFan(c *gin.Context) {
 	h.hub.Broadcast(model.WSMessage{
 		Type: "control",
 		Payload: map[string]interface{}{
-			"type":   "fan",
-			"id":     req.PartitionID,
-			"action": req.Action,
+			"type":       "fan",
+			"id":         req.PartitionID,
+			"action":     req.Action,
+			"command_id": cmdID,
+			"status":     "pending",
 		},
 	})
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "sent",
+		"command_id": cmdID,
+	})
 }
 
 func (h *ControlHandler) SendNotification(c *gin.Context) {

@@ -24,13 +24,13 @@ export const api = {
     request<import('@/types').Alarm>(`/alarms/${id}/acknowledge`, { method: 'PUT' }),
   resolveAlarm: (id: string) =>
     request<import('@/types').Alarm>(`/alarms/${id}/resolve`, { method: 'PUT' }),
-  locateLeak: (data: { detector_ids: string[]; concentrations: number[]; wind_speed: number; wind_direction: number }) =>
+  locateLeak: (data: { detector_ids: string[]; concentrations: number[]; wind_speed: number; wind_direction: number; wind_timestamp?: string }) =>
     request<import('@/types').LeakSourceResult>('/leak/locate', { method: 'POST', body: JSON.stringify(data) }),
   getLatestLeak: () => request<import('@/types').LeakSourceResult | null>('/leak/latest'),
-  controlValve: (data: { device_id: string; action: 'open' | 'closed' }) =>
-    request<import('@/types').ControlResult>('/control/valve', { method: 'POST', body: JSON.stringify(data) }),
-  controlFan: (data: { device_id: string; action: 'start' | 'stop' }) =>
-    request<import('@/types').ControlResult>('/control/fan', { method: 'POST', body: JSON.stringify(data) }),
+  controlValve: (data: { partition_id: string; action: 'open' | 'close' }) =>
+    request<{ status: string; command_id: string }>('/control/valve', { method: 'POST', body: JSON.stringify(data) }),
+  controlFan: (data: { partition_id: string; action: 'start' | 'stop' }) =>
+    request<{ status: string; command_id: string }>('/control/fan', { method: 'POST', body: JSON.stringify(data) }),
   sendNotification: (data: { partition_id: string; message: string }) =>
     request<import('@/types').ControlResult>('/control/notify', { method: 'POST', body: JSON.stringify(data) }),
   getPartitions: () => request<import('@/types').Partition[]>('/partitions'),

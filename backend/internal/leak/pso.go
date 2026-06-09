@@ -37,18 +37,20 @@ func gaussianPlume(srcLat, srcLng, rate, detLat, detLng, windSpeed, windDir floa
 }
 
 type PSO struct {
-	numParticles int
-	maxIter      int
-	w            float64
-	c1           float64
-	c2           float64
-	readings     []model.DetectorReading
-	windSpeed    float64
-	windDir      float64
-	latCenter    float64
-	lngCenter    float64
-	latSpread    float64
-	lngSpread    float64
+	numParticles      int
+	maxIter           int
+	w                 float64
+	c1                float64
+	c2                float64
+	readings          []model.DetectorReading
+	windSpeed         float64
+	windDir           float64
+	windQuality       WindQuality
+	confidencePenalty float64
+	latCenter         float64
+	lngCenter         float64
+	latSpread         float64
+	lngSpread         float64
 }
 
 type particle struct {
@@ -64,7 +66,10 @@ type particle struct {
 	pBestFit  float64
 }
 
-func NewPSO(readings []model.DetectorReading, windSpeed, windDir float64) *PSO {
+func NewPSO(readings []model.DetectorReading, windSpeed, windDir float64, windTimestamp time.Time) *PSO {
+	wa := AssessWindQuality(windSpeed, windDir, windTimestamp)
+	effectiveSpeed, effectiveDir := selectEffectiveWind(wa, readings)
+
 	latMin, latMax := readings[0].Lat, readings[0].Lat
 	lngMin, lngMax := readings[0].Lng, readings[0].Lng
 	for _, r := range readings {
@@ -88,19 +93,31 @@ func NewPSO(readings []model.DetectorReading, windSpeed, windDir float64) *PSO {
 	latSpread := (latMax - latMin)/2 + margin
 	lngSpread := (lngMax - lngMin)/2 + margin
 
+	var confidencePenalty float64
+	switch wa.Quality {
+	case WindQualityGood:
+		confidencePenalty = 0.0
+	case WindQualityStale:
+		confidencePenalty = 0.2
+	case WindQualityUnavailable:
+		confidencePenalty = 0.4
+	}
+
 	return &PSO{
-		numParticles: 50,
-		maxIter:      100,
-		w:            0.7,
-		c1:           1.5,
-		c2:           1.5,
-		readings:     readings,
-		windSpeed:    windSpeed,
-		windDir:      windDir,
-		latCenter:    latCenter,
-		lngCenter:    lngCenter,
-		latSpread:    latSpread,
-		lngSpread:    lngSpread,
+		numParticles:      50,
+		maxIter:           100,
+		w:                 0.7,
+		c1:                1.5,
+		c2:                1.5,
+		readings:          readings,
+		windSpeed:         effectiveSpeed,
+		windDir:           effectiveDir,
+		latCenter:         latCenter,
+		lngCenter:         lngCenter,
+		latSpread:         latSpread,
+		lngSpread:         lngSpread,
+		confidencePenalty: confidencePenalty,
+		windQuality:       wa.Quality,
 	}
 }
 
@@ -196,7 +213,12 @@ func (p *PSO) fitness(lat, lng, rate float64) float64 {
 
 func (p *PSO) computeConfidence(fit float64) float64 {
 	if fit <= 0 {
-		return 0.99
+		conf := 0.99
+		conf *= (1.0 - p.confidencePenalty)
+		if conf < 0.05 {
+			conf = 0.05
+		}
+		return conf
 	}
 	conf := 1.0 / (1.0 + math.Sqrt(fit))
 	if conf > 0.99 {
@@ -205,9 +227,19 @@ func (p *PSO) computeConfidence(fit float64) float64 {
 	if conf < 0.1 {
 		conf = 0.1
 	}
+	conf *= (1.0 - p.confidencePenalty)
+	if conf < 0.05 {
+		conf = 0.05
+	}
 	return conf
 }
 
 func (p *PSO) computeDiffusionRadius(rate float64) float64 {
-	return math.Sqrt(rate) * 10.0
+	radius := math.Sqrt(rate) * 10.0
+	if p.windQuality == WindQualityUnavailable {
+		radius *= 1.5
+	} else if p.windQuality == WindQualityStale {
+		radius *= 1.25
+	}
+	return radius
 }
