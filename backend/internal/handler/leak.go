@@ -4,19 +4,22 @@ import (
 	"net/http"
 	"time"
 
-	"gas-leak-monitor/internal/leak"
 	"gas-leak-monitor/internal/model"
+	"gas-leak-monitor/internal/locator"
+	"gas-leak-monitor/internal/module"
 	"gas-leak-monitor/internal/repository"
 
 	"github.com/gin-gonic/gin"
 )
 
 type LeakHandler struct {
-	pgRepo *repository.PostgresRepo
+	pgRepo  *repository.PostgresRepo
+	locator *locator.LeakLocator
+	bus     *module.MessageBus
 }
 
-func NewLeakHandler(pgRepo *repository.PostgresRepo) *LeakHandler {
-	return &LeakHandler{pgRepo: pgRepo}
+func NewLeakHandler(pgRepo *repository.PostgresRepo, loc *locator.LeakLocator, bus *module.MessageBus) *LeakHandler {
+	return &LeakHandler{pgRepo: pgRepo, locator: loc, bus: bus}
 }
 
 func (h *LeakHandler) LocateLeak(c *gin.Context) {
@@ -25,30 +28,29 @@ func (h *LeakHandler) LocateLeak(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
 	if len(req.DetectorReadings) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no detector readings provided"})
 		return
 	}
 
-	if req.WindSpeed <= 0 {
-		req.WindSpeed = 1.0
+	resultChan := make(chan *model.LeakSourceResult, 1)
+	h.bus.LocateRequest <- &module.LocateRequestMsg{
+		Readings:      req.DetectorReadings,
+		WindSpeed:     req.WindSpeed,
+		WindDirection: req.WindDirection,
+		WindTimestamp:  req.WindTimestamp,
+		Method:        req.Method,
+		ResultChan:    resultChan,
 	}
 
-	var result *model.LeakSourceResult
+	result := <-resultChan
+	if result == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "localization failed"})
+		return
+	}
+
 	method := req.Method
 	if method == "" {
-		method = "pso"
-	}
-
-	switch method {
-	case "bayesian":
-		b := leak.NewBayesian(req.DetectorReadings, req.WindSpeed, req.WindDirection, req.WindTimestamp)
-		result = b.Run()
-		method = "bayesian"
-	default:
-		p := leak.NewPSO(req.DetectorReadings, req.WindSpeed, req.WindDirection, req.WindTimestamp)
-		result = p.Run()
 		method = "pso"
 	}
 

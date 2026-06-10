@@ -1,0 +1,74 @@
+{
+  "server": {
+    "port": 8080
+  },
+  "influxdb": {
+    "url": "http://localhost:8086",
+    "token": "my-token",
+    "org": "gas-monitor",
+    "bucket": "gas-data",
+    "batch_size": 500,
+    "flush_interval_ms": 500
+  },
+  "postgres": {
+    "url": "postgres://postgres:postgres@localhost:5432/gas_monitor?sslmode=disable",
+    "max_open_conns": 25,
+    "max_idle_conns": 10,
+    "conn_max_lifetime_sec": 300
+  },
+  "mqtt": {
+    "broker": "tcp://localhost:1883",
+    "client_id": "gas-monitor-backend",
+    "ack_timeout_sec": 5,
+    "max_retries": 3,
+    "retry_interval_sec": 2
+  },
+  "alarm": {
+    "level1_threshold": 10.0,
+    "level2_threshold": 20.0,
+    "level3_threshold": 50.0
+  },
+  "leak": {
+    "pso": {
+      "num_particles": 50,
+      "max_iterations": 100,
+      "inertia_weight": 0.7,
+      "cognitive_coeff": 1.5,
+      "social_coeff": 1.5,
+      "margin": 0.005,
+      "rate_min": 0.01,
+      "rate_max": 50.0,
+      "max_vrate": 5.0
+    },
+    "bayesian": {
+      "grid_resolution": 50,
+      "rate_min": 0.1,
+      "rate_max": 100.0,
+      "rate_step": 0.5,
+      "margin": 0.005,
+      "sigma_base": 1.0,
+      "sigma_per_quality_level": 0.5
+    },
+    "wind": {
+      "stale_threshold_min": 10,
+      "stale_speed_factor": 0.7,
+      "gradient_blend_weight": 0.3,
+      "fallback_speed_min": 0.5,
+      "fallback_speed_max": 5.0,
+      "fallback_speed_spread_div": 500.0,
+      "default_direction": 90.0,
+      "default_speed": 1.0
+    },
+    "diffusion": {
+      "radius_factor": 10.0,
+      "stale_multiplier": 1.25,
+      "unavailable_multiplier": 1.5
+    },
+    "gaussian": {
+      "m_per_deg_lat": 111320.0,
+      "m_per_deg_lng": 95200.0,
+      "sigma_y_factor": 0.1,
+      "sigma_z_factor": 0.05
+    }
+  }
+}

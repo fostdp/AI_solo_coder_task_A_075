@@ -10,10 +10,16 @@ import (
 	"syscall"
 	"time"
 
+	"gas-leak-monitor/internal/alarm"
+	"gas-leak-monitor/internal/config"
+	"gas-leak-monitor/internal/controller"
 	"gas-leak-monitor/internal/handler"
+	"gas-leak-monitor/internal/locator"
+	"gas-leak-monitor/internal/model"
+	"gas-leak-monitor/internal/module"
 	"gas-leak-monitor/internal/mqtt"
+	"gas-leak-monitor/internal/receiver"
 	"gas-leak-monitor/internal/repository"
-	"gas-leak-monitor/internal/rule"
 	"gas-leak-monitor/internal/ws"
 
 	"github.com/gin-gonic/gin"
@@ -22,21 +28,21 @@ import (
 )
 
 func main() {
-	influxURL := getEnv("INFLUX_URL", "http://localhost:8086")
-	influxToken := getEnv("INFLUX_TOKEN", "my-token")
-	influxOrg := getEnv("INFLUX_ORG", "gas-monitor")
-	influxBucket := getEnv("INFLUX_BUCKET", "gas-data")
+	cfg := loadConfig()
 
-	influxClient := influxdb2.NewClient(influxURL, influxToken)
+	influxClient := influxdb2.NewClient(cfg.InfluxDB.URL, cfg.InfluxDB.Token)
 	defer influxClient.Close()
-	influxRepo := repository.NewInfluxRepo(influxClient, influxOrg, influxBucket)
+	influxRepo := repository.NewInfluxRepo(influxClient, cfg.InfluxDB.Org, cfg.InfluxDB.Bucket, cfg.InfluxDB.BatchSize, cfg.InfluxDB.FlushIntervalMs)
+	defer influxRepo.Close()
 
-	pgConnStr := getEnv("POSTGRES_URL", "postgres://postgres:postgres@localhost:5432/gas_monitor?sslmode=disable")
-	pgDB, err := sql.Open("postgres", pgConnStr)
+	pgDB, err := sql.Open("postgres", cfg.Postgres.URL)
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
 	}
 	defer pgDB.Close()
+	pgDB.SetMaxOpenConns(cfg.Postgres.MaxOpenConns)
+	pgDB.SetMaxIdleConns(cfg.Postgres.MaxIdleConns)
+	pgDB.SetConnMaxLifetime(time.Duration(cfg.Postgres.ConnMaxLifetimeSec) * time.Second)
 
 	if err := pgDB.Ping(); err != nil {
 		log.Fatalf("Failed to ping PostgreSQL: %v", err)
@@ -48,24 +54,28 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	mqttBroker := getEnv("MQTT_BROKER", "tcp://localhost:1883")
-	mqttClientID := getEnv("MQTT_CLIENT_ID", "gas-monitor-backend")
-	mqttCli := mqtt.NewClient(mqttBroker, mqttClientID)
-	mqttCli.Connect()
-	defer mqttCli.Disconnect()
+	mqttClient := mqtt.NewClient(cfg.MQTT.Broker, cfg.MQTT.ClientID)
+	mqttClient.Connect()
+	defer mqttClient.Disconnect()
 
-	engine := rule.NewEngine(pgRepo, hub, mqttCli)
-	go engine.Run()
+	bus := module.NewMessageBus()
 
-	detectorHandler := handler.NewDetectorHandler(influxRepo, pgRepo, engine)
-	sensorHandler := handler.NewSensorHandler(influxRepo, pgRepo)
-	alarmHandler := handler.NewAlarmHandler(pgRepo)
-	leakHandler := handler.NewLeakHandler(pgRepo)
-	controlHandler := handler.NewControlHandler(pgRepo, mqttCli, hub)
+	rcv := receiver.NewLaserReceiver(influxRepo, pgRepo, bus)
+	loc := locator.NewLeakLocator(&cfg.Leak, bus)
+	ec := controller.NewEmergencyController(pgRepo, mqttClient, bus)
+	ar := alarm.NewAlarmRouter(&cfg.Alarm, pgRepo, bus)
+
+	go loc.RunWorker()
+	go runWSForwarder(hub, bus)
+
+	detectorHandler := handler.NewDetectorHandler(rcv)
+	sensorHandler := handler.NewSensorHandler(rcv)
+	alarmHandler := handler.NewAlarmHandler(ar)
+	leakHandler := handler.NewLeakHandler(pgRepo, loc, bus)
+	controlHandler := handler.NewControlHandler(ec)
 	wsHandler := handler.NewWSHandler(hub)
 
 	r := gin.Default()
-
 	api := r.Group("/api")
 	{
 		api.GET("/detectors", detectorHandler.GetDetectors)
@@ -88,7 +98,6 @@ func main() {
 		api.POST("/control/notify", controlHandler.SendNotification)
 		api.GET("/partitions", controlHandler.GetPartitions)
 	}
-
 	r.GET("/ws", wsHandler.HandleWebSocket)
 
 	srv := &http.Server{
@@ -110,17 +119,30 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
-
 	log.Println("Server exited")
 }
 
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+func loadConfig() *config.Config {
+	cfgPath := "config.json"
+	if p := os.Getenv("CONFIG_PATH"); p != "" {
+		cfgPath = p
 	}
-	return defaultValue
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		log.Printf("Config file not found at %s, using defaults", cfgPath)
+		cfg = config.Defaults()
+	}
+	return cfg
+}
+
+func runWSForwarder(hub *ws.Hub, bus *module.MessageBus) {
+	for msg := range bus.WSBroadcast {
+		hub.Broadcast(model.WSMessage{
+			Type:    msg.Type,
+			Payload: msg.Payload,
+		})
+	}
 }

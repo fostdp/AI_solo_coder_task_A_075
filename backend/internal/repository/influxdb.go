@@ -26,7 +26,7 @@ type InfluxRepo struct {
 	quit    chan struct{}
 }
 
-func NewInfluxRepo(client influxdb2.Client, org, bucket string) *InfluxRepo {
+func NewInfluxRepo(client influxdb2.Client, org, bucket string, bufSize int, flushMs int) *InfluxRepo {
 	writeAPI := client.WriteAPI(org, bucket)
 
 	r := &InfluxRepo{
@@ -36,8 +36,8 @@ func NewInfluxRepo(client influxdb2.Client, org, bucket string) *InfluxRepo {
 		writeAPI: writeAPI,
 		queryAPI: client.QueryAPI(org),
 		pending:  make([]*write.Point, 0, 512),
-		bufSize:  500,
-		flushMs:  500 * time.Millisecond,
+		bufSize:  bufSize,
+		flushMs:  time.Duration(flushMs) * time.Millisecond,
 		quit:     make(chan struct{}),
 	}
 
