@@ -1,0 +1,6 @@
+from(bucket: "gas-data")
+  |> range(start: -24h)
+  |> filter(fn: (r) => r._measurement == "detector_data")
+  |> filter(fn: (r) => r._field == "concentration")
+  |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
+  |> to(bucket: "gas-data-downsampled-1h", org: "gas-monitor")

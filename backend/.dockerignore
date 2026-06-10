@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+*.md
+deploy
+scripts
+src
+package*.json
+vite.config.ts
+tsconfig*.json
+tailwind.config.js
+postcss.config.js
+index.html

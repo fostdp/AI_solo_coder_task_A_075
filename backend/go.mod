@@ -8,4 +8,5 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/influxdata/influxdb-client-go/v2 v2.12.3
 	github.com/lib/pq v1.10.9
+	github.com/prometheus/client_golang v1.19.0
 )

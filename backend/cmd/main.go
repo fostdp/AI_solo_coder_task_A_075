@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"gas-leak-monitor/internal/controller"
 	"gas-leak-monitor/internal/handler"
 	"gas-leak-monitor/internal/locator"
+	"gas-leak-monitor/internal/metrics"
 	"gas-leak-monitor/internal/model"
 	"gas-leak-monitor/internal/module"
 	"gas-leak-monitor/internal/mqtt"
@@ -75,7 +77,11 @@ func main() {
 	controlHandler := handler.NewControlHandler(ec)
 	wsHandler := handler.NewWSHandler(hub)
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(metrics.MetricsMiddleware())
+	r.Use(gin.Logger())
+
 	api := r.Group("/api")
 	{
 		api.GET("/detectors", detectorHandler.GetDetectors)
@@ -99,6 +105,33 @@ func main() {
 		api.GET("/partitions", controlHandler.GetPartitions)
 	}
 	r.GET("/ws", wsHandler.HandleWebSocket)
+	r.GET("/metrics", metrics.PrometheusHandler())
+
+	debugGroup := r.Group("/debug")
+	{
+		debugGroup.GET("/pprof/", gin.WrapF(pprof.Index))
+		debugGroup.GET("/pprof/cmdline", gin.WrapF(pprof.Cmdline))
+		debugGroup.GET("/pprof/profile", gin.WrapF(pprof.Profile))
+		debugGroup.GET("/pprof/symbol", gin.WrapF(pprof.Symbol))
+		debugGroup.GET("/pprof/trace", gin.WrapF(pprof.Trace))
+		debugGroup.GET("/pprof/heap", gin.WrapH(pprof.Handler("heap")))
+		debugGroup.GET("/pprof/goroutine", gin.WrapH(pprof.Handler("goroutine")))
+		debugGroup.GET("/pprof/block", gin.WrapH(pprof.Handler("block")))
+		debugGroup.GET("/pprof/mutex", gin.WrapH(pprof.Handler("mutex")))
+	}
+
+	go func() {
+		log.Println("Pprof server starting on :6060")
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		if err := http.ListenAndServe(":6060", mux); err != nil {
+			log.Printf("Pprof server error: %v", err)
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:    ":8080",
@@ -135,6 +168,15 @@ func loadConfig() *config.Config {
 		log.Printf("Config file not found at %s, using defaults", cfgPath)
 		cfg = config.Defaults()
 	}
+	if url := os.Getenv("INFLUXDB_URL"); url != "" {
+		cfg.InfluxDB.URL = url
+	}
+	if url := os.Getenv("POSTGRES_URL"); url != "" {
+		cfg.Postgres.URL = url
+	}
+	if broker := os.Getenv("MQTT_BROKER"); broker != "" {
+		cfg.MQTT.Broker = broker
+	}
 	return cfg
 }
 
@@ -144,5 +186,6 @@ func runWSForwarder(hub *ws.Hub, bus *module.MessageBus) {
 			Type:    msg.Type,
 			Payload: msg.Payload,
 		})
+		metrics.WSMessagesBroadcast.Inc()
 	}
 }

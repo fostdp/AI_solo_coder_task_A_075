@@ -1,0 +1,115 @@
+version: "3.8"
+
+services:
+  influxdb:
+    image: influxdb:2.7
+    ports:
+      - "8086:8086"
+    environment:
+      INFLUXDB_DB: gas-data
+      INFLUXDB_ADMIN_USER: admin
+      INFLUXDB_ADMIN_PASSWORD: admin123
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: admin12345678
+      DOCKER_INFLUXDB_INIT_ORG: gas-monitor
+      DOCKER_INFLUXDB_INIT_BUCKET: gas-data
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: my-super-secret-token
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - gas-monitor-net
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: gas_monitor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - gas-monitor-net
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    networks:
+      - gas-monitor-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "6060:6060"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      CONFIG_PATH: /app/config.json
+      INFLUXDB_URL: http://influxdb:8086
+      POSTGRES_URL: postgres://postgres:postgres@postgres:5432/gas_monitor?sslmode=disable
+      MQTT_BROKER: tcp://mosquitto:1883
+    networks:
+      - gas-monitor-net
+
+  simulator:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      API_HOST: backend
+      API_PORT: "8080"
+      TUNNEL_LENGTH: "30000"
+      NUM_DETECTORS: "300"
+      REPORT_INTERVAL: "1.0"
+    networks:
+      - gas-monitor-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - gas-monitor-net
+
+volumes:
+  influxdb-data:
+  postgres-data:
+  mosquitto-data:
+  mosquitto-log:
+
+networks:
+  gas-monitor-net:
+    driver: bridge

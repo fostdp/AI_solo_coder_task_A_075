@@ -3,21 +3,21 @@
     "port": 8080
   },
   "influxdb": {
-    "url": "http://localhost:8086",
-    "token": "my-token",
+    "url": "http://influxdb:8086",
+    "token": "my-super-secret-token",
     "org": "gas-monitor",
     "bucket": "gas-data",
     "batch_size": 500,
     "flush_interval_ms": 500
   },
   "postgres": {
-    "url": "postgres://postgres:postgres@localhost:5432/gas_monitor?sslmode=disable",
+    "url": "postgres://postgres:postgres@postgres:5432/gas_monitor?sslmode=disable",
     "max_open_conns": 25,
     "max_idle_conns": 10,
     "conn_max_lifetime_sec": 300
   },
   "mqtt": {
-    "broker": "tcp://localhost:1883",
+    "broker": "tcp://mosquitto:1883",
     "client_id": "gas-monitor-backend",
     "ack_timeout_sec": 5,
     "max_retries": 3,
